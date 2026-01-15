@@ -30,7 +30,7 @@ const App: React.FC = () => {
   const [loadingMessage, setLoadingMessage] = useState<string>(loadingPhrases[0]);
   const [error, setError] = useState<string | null>(null);
   const [showWebhookInfo, setShowWebhookInfo] = useState<boolean>(false);
-  const [crmSendStatus, setCrmSendStatus] = useState<'idle' | 'sending' | 'success' | 'error'>('idle');
+  const [crmSendStatus, setCrmSendStatus] = useState<'idle' | 'sending' | 'success' | 'error' | 'config_missing'>('idle');
 
 
   const handleResearch = useCallback(async (companyToSearch: string, locationToSearch: string) => {
@@ -142,8 +142,17 @@ const App: React.FC = () => {
 }, [leads, companyInput]);
 
   const handleSendToCrm = useCallback(async () => {
-      setCrmSendStatus('sending');
+      // Prioritize VITE_ prefix as it's the industry standard for client-side injection
+      const secret = ((process.env as any).VITE_WEBHOOK_SECRET || (process.env as any).webhook_secret || (process.env as any).WEBHOOK_SECRET)?.trim();
       
+      if (!secret) {
+          console.error("WEBHOOK SECRET NOT DETECTED. Ensure the env variable is labeled VITE_WEBHOOK_SECRET.");
+          setCrmSendStatus('config_missing');
+          return;
+      }
+
+      setCrmSendStatus('sending');
+
       try {
           const leadPromises = leads.map(lead => {
               const enrichedEmails = lead.enrichedData?.emails?.map(e => e.value) || [];
@@ -152,22 +161,18 @@ const App: React.FC = () => {
               const baseEmail = lead.email.toLowerCase() !== 'not found' ? lead.email : null;
               const basePhone = lead.phone.toLowerCase() !== 'not found' ? lead.phone : null;
               
-              // Combine and deduplicate, prioritizing enriched data
               const allEmails = [...new Set([...enrichedEmails, ...(baseEmail ? [baseEmail] : [])])];
               const allPhones = [...new Set([...enrichedPhones, ...(basePhone ? [basePhone] : [])])];
 
               const primaryEmail = allEmails[0] || '';
-              const additionalEmails = allEmails.slice(1);
-
               const primaryPhone = allPhones[0] || '';
-              const additionalPhones = allPhones.slice(1);
               
               let summaryAndNotes = lead.enrichedData?.summary || '';
-              if (additionalEmails.length > 0) {
-                  summaryAndNotes += `\n\nAdditional Emails:\n${additionalEmails.join('\n')}`;
+              if (allEmails.length > 1) {
+                  summaryAndNotes += `\n\nAdditional Emails:\n${allEmails.slice(1).join('\n')}`;
               }
-              if (additionalPhones.length > 0) {
-                  summaryAndNotes += `\n\nAdditional Phones:\n${additionalPhones.join('\n')}`;
+              if (allPhones.length > 1) {
+                  summaryAndNotes += `\n\nAdditional Phones:\n${allPhones.slice(1).join('\n')}`;
               }
 
               const payload = {
@@ -181,26 +186,24 @@ const App: React.FC = () => {
                   tenant_subdomain: tenantSubdomain,
               };
 
-              // Use process.env.webhook_secret as provided by the user
               return fetch('https://zlkpkcxeplxavplpvqua.supabase.co/functions/v1/webhook-company', {
                   method: 'POST',
                   headers: {
                       'Content-Type': 'application/json',
                       'x-company-name': companyInput,
-                      'x-webhook-apikey': (process.env as any).webhook_secret || '',
+                      'x-webhook-apikey': secret,
                   },
                   body: JSON.stringify(payload),
               }).then(async response => {
                   if (!response.ok) {
                       const errorText = await response.text();
-                      throw new Error(`Webhook for "${lead.name}" failed: ${errorText}`);
+                      throw new Error(`Webhook Failed: ${errorText}`);
                   }
                   return response;
               });
           });
 
           await Promise.all(leadPromises);
-
           setCrmSendStatus('success');
           setTimeout(() => setCrmSendStatus('idle'), 3000);
 
@@ -226,10 +229,16 @@ const App: React.FC = () => {
                 ✓ Sent Successfully!
             </button>
         );
+      case 'config_missing':
+        return (
+            <button onClick={handleSendToCrm} className={`${baseClasses} w-48 bg-amber-600 hover:bg-amber-700 text-white`}>
+                Config Error: Env missing
+            </button>
+        );
       case 'error':
         return (
             <button onClick={handleSendToCrm} className={`${baseClasses} w-48 bg-red-600 hover:bg-red-700 text-white`}>
-                Send Failed. Retry?
+                401/Auth Fail. Retry?
             </button>
         );
       case 'idle':
