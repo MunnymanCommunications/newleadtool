@@ -31,7 +31,17 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [showWebhookInfo, setShowWebhookInfo] = useState<boolean>(false);
   const [crmSendStatus, setCrmSendStatus] = useState<'idle' | 'sending' | 'success' | 'error' | 'config_missing'>('idle');
+  
+  // State for manual secret override if env vars fail to inject
+  const [manualSecret, setManualSecret] = useState<string>(localStorage.getItem('CRM_WEBHOOK_SECRET') || '');
 
+  // Helper to get the secret from any possible source
+  const getWebhookSecret = useCallback(() => {
+      if (manualSecret.trim()) return manualSecret.trim();
+      
+      const env = (process.env as any) || {};
+      return (env.VITE_WEBHOOK_SECRET || env.webhook_secret || env.WEBHOOK_SECRET || '').trim();
+  }, [manualSecret]);
 
   const handleResearch = useCallback(async (companyToSearch: string, locationToSearch: string) => {
     if (!companyToSearch.trim()) {
@@ -142,11 +152,9 @@ const App: React.FC = () => {
 }, [leads, companyInput]);
 
   const handleSendToCrm = useCallback(async () => {
-      // Prioritize VITE_ prefix as it's the industry standard for client-side injection
-      const secret = ((process.env as any).VITE_WEBHOOK_SECRET || (process.env as any).webhook_secret || (process.env as any).WEBHOOK_SECRET)?.trim();
+      const secret = getWebhookSecret();
       
       if (!secret) {
-          console.error("WEBHOOK SECRET NOT DETECTED. Ensure the env variable is labeled VITE_WEBHOOK_SECRET.");
           setCrmSendStatus('config_missing');
           return;
       }
@@ -197,7 +205,7 @@ const App: React.FC = () => {
               }).then(async response => {
                   if (!response.ok) {
                       const errorText = await response.text();
-                      throw new Error(`Webhook Failed: ${errorText}`);
+                      throw new Error(`Auth Error: ${errorText}`);
                   }
                   return response;
               });
@@ -208,10 +216,10 @@ const App: React.FC = () => {
           setTimeout(() => setCrmSendStatus('idle'), 3000);
 
       } catch (err) {
-          console.error("Failed to send to CRM:", err);
+          console.error("CRM Send Error:", err);
           setCrmSendStatus('error');
       }
-  }, [leads, companyInput, overview, tenantSubdomain]);
+  }, [leads, companyInput, overview, tenantSubdomain, getWebhookSecret]);
 
   const renderCrmButton = () => {
     const baseClasses = "flex items-center justify-center gap-2 font-semibold py-2 px-4 rounded-md transition-all duration-300 ease-in-out";
@@ -231,14 +239,14 @@ const App: React.FC = () => {
         );
       case 'config_missing':
         return (
-            <button onClick={handleSendToCrm} className={`${baseClasses} w-48 bg-amber-600 hover:bg-amber-700 text-white`}>
-                Config Error: Env missing
+            <button onClick={() => setShowWebhookInfo(true)} className={`${baseClasses} w-48 bg-amber-600 hover:bg-amber-700 text-white`}>
+                Config Error: Click to Fix
             </button>
         );
       case 'error':
         return (
             <button onClick={handleSendToCrm} className={`${baseClasses} w-48 bg-red-600 hover:bg-red-700 text-white`}>
-                401/Auth Fail. Retry?
+                Send Failed. Retry?
             </button>
         );
       case 'idle':
@@ -314,7 +322,16 @@ const App: React.FC = () => {
                   {showWebhookInfo ? 'Hide' : 'Show'} API/Webhook Info
               </button>
           </div>
-          {showWebhookInfo && <WebhookInfo />}
+          {showWebhookInfo && (
+              <WebhookInfo 
+                  manualSecret={manualSecret} 
+                  onSecretChange={(val) => {
+                      setManualSecret(val);
+                      localStorage.setItem('CRM_WEBHOOK_SECRET', val);
+                      if (crmSendStatus === 'config_missing' && val) setCrmSendStatus('idle');
+                  }} 
+              />
+          )}
         </div>
 
         {error && (
